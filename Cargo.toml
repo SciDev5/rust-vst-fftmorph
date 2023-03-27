@@ -1,0 +1,27 @@
+[package]
+name = "rust-vst-fftmorph"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["assert_process_allocs"] }
+rustfft = "6.1.0"
+native-dialog = "0.6.3"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = "none"
