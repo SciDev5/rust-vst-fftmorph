@@ -23,15 +23,13 @@ impl Morpher {
         cx_b: &Vec<Complex32>,
         k: f32,
 
-        z: f32,
+        aux_spectral_spread: f32,
+        iter_count: i32,
     ) -> Vec<Complex32> {
         let mut cx_out = Vec::<Complex32>::with_capacity(window_size);
 
-        let k_low = k.powf(1.0/5.0);
-        let k_hi = k.powf(5.0);
-
         let b_abs = cx_b.iter().map(|v|v.abs()).collect::<Vec<f32>>();
-        let z = (50.0 * z) as i32 + 1;
+        let z = (50.0 * aux_spectral_spread) as i32 + 1;
 
         for i in 0..window_size {
             // cx_out.push(Complex32::from(cx_a[i].abs() * cx_b[i].abs() / (scale * scale)));
@@ -68,8 +66,9 @@ impl Morpher {
             // } else {
             //     (k*2.0).lerp(a, a*b)
             // };
-            const V:f32 = 0.00001;
-            for _ in 0 .. 4 {
+            // const V:f32 = 0.00001;
+            const V:f32 = 1.0e-16;
+            for _ in 0 .. iter_count {
                 a = k.lerp((a+V).ln(), (b+V).ln()).exp()-V;
             }
             cx_out.push(Complex32::from_polar(a, theta));
@@ -77,7 +76,7 @@ impl Morpher {
 
         cx_out
     }
-    pub fn morph_2x(&mut self, a: &[f32], b: &[f32], k: f32, z: f32) -> (Vec<f32>, Vec<f32>) {
+    pub fn morph_2x(&mut self, a: &[f32], b: &[f32], k: f32, aux_spectral_spread: f32, iter_count: i32) -> (Vec<f32>, Vec<f32>) {
         assert_eq!(a.len(), b.len());
         let window_size = a.len();
         let scale = (a.len() as f32).sqrt();
@@ -98,8 +97,8 @@ impl Morpher {
         fft_fwd.process(&mut cx_a);
         fft_fwd.process(&mut cx_b);
 
-        let mut cx_out_ab = Self::p(window_size, scale, &cx_a, &cx_b, k, z);
-        let mut cx_out_ba = Self::p(window_size, scale, &cx_a, &cx_b, 1.0 - k, z);
+        let mut cx_out_ab = Self::p(window_size, scale, &cx_a, &cx_b, k, aux_spectral_spread, iter_count);
+        let mut cx_out_ba = Self::p(window_size, scale, &cx_a, &cx_b, 1.0 - k, aux_spectral_spread, iter_count);
 
         fft_inv.process(&mut cx_out_ab);
         fft_inv.process(&mut cx_out_ba);
@@ -115,7 +114,7 @@ impl Morpher {
     }
 
     
-    pub fn morph(&mut self, a: &[f32], b: &[f32], k: f32, z: f32) -> Vec<f32> {
+    pub fn morph(&mut self, a: &[f32], b: &[f32], k: f32, aux_spectral_spread: f32, iter_count: i32) -> Vec<f32> {
         assert_eq!(a.len(), b.len());
         let window_size = a.len();
         let scale = (a.len() as f32).sqrt();
@@ -136,7 +135,7 @@ impl Morpher {
         fft_fwd.process(&mut cx_a);
         fft_fwd.process(&mut cx_b);
 
-        let mut cx_out = Self::p(window_size, scale, &cx_a, &cx_b, k, z);
+        let mut cx_out = Self::p(window_size, scale, &cx_a, &cx_b, k, aux_spectral_spread, iter_count);
 
         fft_inv.process(&mut cx_out);
 

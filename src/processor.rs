@@ -44,7 +44,7 @@ impl Processor {
         }
     }
 
-    pub fn process_2x(&mut self, a: &mut [f32], b: &[f32], morph_k: &[f32], fade_k: &[f32], z: &[f32]) {
+    pub fn process_2x(&mut self, a: &mut [f32], b: &[f32], morph_k: &[f32], fade_k: &[f32], z: f32, iter_count: i32) {
         assert_eq!(a.len(), b.len());
         self.set_chunk_len(a.len());
 
@@ -59,7 +59,7 @@ impl Processor {
 
         let (morphed_ab, morphed_ba) =
             self.morpher
-                .morph_2x(&self.stored_a[..], &self.stored_b[..], k, z[0]);
+                .morph_2x(&self.stored_a[..], &self.stored_b[..], k, z, iter_count);
 
         const OFF: usize = 400;
         let current_morphed_ab = morphed_ab
@@ -83,7 +83,7 @@ impl Processor {
             morphed_ba[(PROCESS_LEN - self.chunk_len - OFF)..(PROCESS_LEN - OFF)].to_vec();
     }
 
-    pub fn process(&mut self, a: &mut [f32], b: &[f32], morph_k: &[f32], z: &[f32]) {
+    pub fn process(&mut self, a: &mut [f32], b: &[f32], morph_k: &[f32], aux_spectral_spread: f32, iter_count: i32) {
         assert_eq!(a.len(), b.len());
         self.set_chunk_len(a.len());
 
@@ -98,22 +98,23 @@ impl Processor {
 
         let morphed = self
             .morpher
-            .morph(&self.stored_a[..], &self.stored_b[..], k, z[0]);
+            .morph(&self.stored_a[..], &self.stored_b[..], k, aux_spectral_spread, iter_count);
 
-        const OFF: usize = 400;
+        let off: usize = self.chunk_len / 2;
         let current_morphed = morphed
-            [(PROCESS_LEN - self.chunk_len * 2 - OFF)..(PROCESS_LEN - self.chunk_len - OFF)]
+            [(PROCESS_LEN - self.chunk_len * 2 - off)..(PROCESS_LEN - self.chunk_len - off)]
             .to_vec();
 
         for i in 0..self.chunk_len {
             let k = i as f32 / self.chunk_len as f32;
-            let morphed = k.lerp(self.prevnext_morphed_ab[i], current_morphed[i]);
+            // let morphed = current_morphed[i];
+            let morphed = k.lerp(-0.25, 1.25).clamp(0.0, 1.0).lerp(self.prevnext_morphed_ab[i], current_morphed[i]);
 
             // a is the output channel
             a[i] = morphed;
         }
         self.prevnext_morphed_ab =
-            morphed[(PROCESS_LEN - self.chunk_len - OFF)..(PROCESS_LEN - OFF)].to_vec();
+            morphed[(PROCESS_LEN - self.chunk_len - off)..(PROCESS_LEN - off)].to_vec();
     }
 }
 
@@ -131,7 +132,7 @@ mod test {
         let morph_k = vec![0.0_f32; bl];
         let fade_k = vec![0.0_f32; bl];
 
-        p.process_2x(&mut a[..], &b[..], &morph_k[..], &fade_k[..], &[0.95]);
-        p.process(&mut a[..], &b[..], &morph_k[..], &[0.95]);
+        p.process_2x(&mut a[..], &b[..], &morph_k[..], &fade_k[..], 0.95, 4);
+        p.process(&mut a[..], &b[..], &morph_k[..], 0.95,4);
     }
 }

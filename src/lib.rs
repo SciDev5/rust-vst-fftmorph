@@ -33,6 +33,8 @@ struct MorphParams {
     pub fade_k: FloatParam,
     #[id = "z"]
     pub z: FloatParam,
+    #[id = "iter_count"]
+    pub iter_count: IntParam,
     // #[id = "2x-mode"]
     // pub double_mode: BoolParam,
     #[id = "gain"]
@@ -71,6 +73,15 @@ impl Default for MorphParams {
             )
             .with_smoother(SmoothingStyle::Linear(3.0))
             .with_step_size(0.01),
+            iter_count: IntParam::new(
+                "Iter. Count",
+                5,
+                IntRange::Linear {
+                    min: 0,
+                    max: 15,
+                },
+            )
+            .with_smoother(SmoothingStyle::None),
             gain: FloatParam::new(
                 "Gain",
                 -10.0,
@@ -141,10 +152,12 @@ impl Plugin for MorphPlugin {
         
         let mut morph_k = vec![0.0; block_len];
         let mut fade_k = vec![0.0; block_len];
-        let mut z = vec![0.0; block_len];
+        let mut aux_spectral_spread = vec![0.0; block_len];
+        let mut iter_count = vec![0; block_len];
         self.params.morph_k.smoothed.next_block(&mut morph_k[..], block_len);
         self.params.fade_k.smoothed.next_block(&mut fade_k[..], block_len);
-        self.params.z.smoothed.next_block(&mut z[..], block_len);
+        self.params.z.smoothed.next_block(&mut aux_spectral_spread[..], block_len);
+        self.params.iter_count.smoothed.next_block(&mut iter_count[..], block_len);
 
         for channel_id in 0..N_CHANNELS {
             self.processors[channel_id].process(
@@ -152,7 +165,8 @@ impl Plugin for MorphPlugin {
                 samples_aux[channel_id],
                 &morph_k,
                 // &fade_k,
-                &z,
+                aux_spectral_spread[0],
+                iter_count[0],
             );
         }
 
