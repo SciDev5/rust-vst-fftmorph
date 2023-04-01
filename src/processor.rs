@@ -89,12 +89,12 @@ impl Processor {
 
         self.shift_into_stored(a, b);
 
-        let k = morph_k
+        let k = (morph_k
             .iter()
             .map(|v| *v)
             .reduce(|a, b| a + b)
             .unwrap_or(0.0)
-            / morph_k.len() as f32;
+            / morph_k.len() as f32).powf(2.5);
 
         let morphed = self
             .morpher
@@ -109,7 +109,8 @@ impl Processor {
             let k = i as f32 / self.chunk_len as f32;
             // let morphed = current_morphed[i];
             let morphed = k.lerp(-0.25, 1.25).clamp(0.0, 1.0).lerp(self.prevnext_morphed_ab[i], current_morphed[i]);
-
+            // let morphed = k.invlerp(0.0, 1.0).clamp(0.0, 1.0).lerp(self.prevnext_morphed_ab[0],current_morphed[0]) + current_morphed[i];
+        
             // a is the output channel
             a[i] = morphed;
         }

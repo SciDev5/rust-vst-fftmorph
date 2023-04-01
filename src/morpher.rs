@@ -38,19 +38,22 @@ impl Morpher {
             let a = cx_a[i] / scale;
             let b = cx_b[i] / scale;
 
-            let theta = if a.is_zero() {
-                if b.is_zero() {
-                    0.0
-                } else {
-                    b.arg()
-                }
-            } else {
-                if b.is_zero() {
-                    a.arg()
-                } else {
-                    k.lerp(a.arg(), b.arg())
-                }
-            };
+            // let theta = k.lerp(a,b).arg();
+            // let theta = if a.is_zero() {
+            //     if b.is_zero() {
+            //         0.0
+            //     } else {
+            //         b.arg()
+            //     }
+            // } else {
+            //     if b.is_zero() {
+            //         a.arg()
+            //     } else {
+            //         k.lerp(a.arg(), b.arg())
+            //     }
+            // };
+            // let theta = if (i as i32 - window_size as i32/2).abs() < window_size as i32 / 4 { 0.0 } else { k.lerp(a,b).arg() };
+            let theta = if i > window_size/4 { k.powi(10)*b.arg() + (1.0-k).powi(16)*a.arg()  } else { k.lerp(a,b).arg() };
             let mut a = a.abs();
             let mut b = 0.0;
             // let mut mag = 0.0;
@@ -72,6 +75,9 @@ impl Morpher {
                 a = k.lerp((a+V).ln(), (b+V).ln()).exp()-V;
             }
             cx_out.push(Complex32::from_polar(a, theta));
+
+            
+            // cx_out.push(Complex32::from_polar(cx_b[i].abs() / scale, cx_a[i].arg()));
         }
 
         cx_out
