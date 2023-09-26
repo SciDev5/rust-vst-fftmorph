@@ -1,212 +1,189 @@
 use rustfft::{
     num_complex::{Complex32, ComplexFloat},
-    num_traits::Zero,
     FftPlanner,
 };
 
-use crate::util::lerpable::Lerpable;
+use crate::util::{lerpable::Lerpable, ring_buffer::RingBuffer};
 
+/// Morphs two single-channel audio signals together
 pub struct Morpher {
-    fft_planner: FftPlanner<f32>,
+    fft_fwd: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    fft_inv: std::sync::Arc<dyn rustfft::Fft<f32>>,
+
+    window_func: Vec<f32>,
+    window_size: usize,
+    hop_length: usize,
+
+    input_buf_a: RingBuffer<f32>,
+    input_buf_b: RingBuffer<f32>,
+    output_buf: RingBuffer<(f32, f32)>,
+
+    proc_buf: (Vec<Complex32>, Vec<Complex32>),
+    phase_accum: Vec<f32>,
+    phase_prev: Vec<(f32, f32)>,
+    // mag_faded: Vec<(f32, f32)>,
+    mag_prev: Vec<(f32, f32)>,
+}
+
+fn cosine_window_fn(window_size: usize) -> Vec<f32> {
+    let mut output = vec![0.0; window_size];
+    for i in 0..window_size {
+        output[i] =
+            1.0 - ((i + 1) as f32 / (window_size + 1) as f32 * std::f32::consts::PI * 2.0).cos();
+    }
+    output
 }
 
 impl Morpher {
     pub fn new() -> Self {
+        const DEFAULT_WINDOW_SIZE: usize = 1024;
+        const DEFAULT_HOP_LENGTH: usize = 256;
+        let window_size = DEFAULT_WINDOW_SIZE;
+        let hop_length = DEFAULT_HOP_LENGTH;
+        let mut fft_planner = FftPlanner::new();
+        let fft_fwd = fft_planner.plan_fft_forward(window_size);
+        let fft_inv = fft_planner.plan_fft_inverse(window_size);
         Self {
-            fft_planner: FftPlanner::new(),
+            fft_fwd,
+            fft_inv,
+
+            window_size,
+            hop_length,
+
+            window_func: cosine_window_fn(window_size),
+
+            input_buf_a: RingBuffer::new(window_size, 0.0),
+            input_buf_b: RingBuffer::new(window_size, 0.0),
+            output_buf: RingBuffer::new(window_size, (0.0, 0.0)),
+
+            proc_buf: (
+                vec![Complex32::default(); window_size],
+                vec![Complex32::default(); window_size],
+            ),
+
+            phase_accum: vec![0.0; window_size],
+            phase_prev: vec![(0.0, 0.0); window_size],
+            // mag_faded: vec![(0.0, 0.0); window_size],
+            mag_prev: vec![(0.0, 0.0); window_size],
         }
     }
-    fn p(
-        window_size: usize,
-        scale: f32,
-        cx_a: &Vec<Complex32>,
-        cx_b: &Vec<Complex32>,
-        k: f32,
 
-        aux_spectral_spread: f32,
-        iter_count: i32,
-    ) -> Vec<Complex32> {
-        let mut cx_out = Vec::<Complex32>::with_capacity(window_size);
-
-        let b_abs = cx_b.iter().map(|v|v.abs()).collect::<Vec<f32>>();
-        let z = (50.0 * aux_spectral_spread) as i32 + 1;
-
-        for i in 0..window_size {
-            // cx_out.push(Complex32::from(cx_a[i].abs() * cx_b[i].abs() / (scale * scale)));
-            // cx_out.push(cx_a[i] * cx_b[i].abs() / (scale * scale));
-
-            let a = cx_a[i] / scale;
-            let b = cx_b[i] / scale;
-
-            // let theta = k.lerp(a,b).arg();
-            // let theta = if a.is_zero() {
-            //     if b.is_zero() {
-            //         0.0
-            //     } else {
-            //         b.arg()
-            //     }
-            // } else {
-            //     if b.is_zero() {
-            //         a.arg()
-            //     } else {
-            //         k.lerp(a.arg(), b.arg())
-            //     }
-            // };
-            // let theta = if (i as i32 - window_size as i32/2).abs() < window_size as i32 / 4 { 0.0 } else { k.lerp(a,b).arg() };
-            let theta = if i > window_size/4 { k.powi(10)*b.arg() + (1.0-k).powi(16)*a.arg()  } else { k.lerp(a,b).arg() };
-            let mut a = a.abs();
-            let mut b = 0.0;
-            // let mut mag = 0.0;
-            for j in ((i as i32 - z) as usize) .. ((i as i32 + z) as usize).min(window_size - 1) {
-                // let f = 1.0 ;//- ((i as f32 - j as f32).abs() / z as f32);
-                b += b_abs[j];// * f;
-                // mag += f;
-            }
-            b /= scale * z as f32 * 2.0;
-            // let r = k.lerp(a, b);
-            // let r = if k > 0.5 {
-            //     (k*2.0-1.0).lerp(a*b, b)
-            // } else {
-            //     (k*2.0).lerp(a, a*b)
-            // };
-            // const V:f32 = 0.00001;
-            const V:f32 = 1.0e-16;
-            for _ in 0 .. iter_count {
-                a = k.lerp((a+V).ln(), (b+V).ln()).exp()-V;
-            }
-            cx_out.push(Complex32::from_polar(a, theta));
-
-            
-            // cx_out.push(Complex32::from_polar(cx_b[i].abs() / scale, cx_a[i].arg()));
-        }
-
-        cx_out
-    }
-    pub fn morph_2x(&mut self, a: &[f32], b: &[f32], k: f32, aux_spectral_spread: f32, iter_count: i32) -> (Vec<f32>, Vec<f32>) {
-        assert_eq!(a.len(), b.len());
-        let window_size = a.len();
-        let scale = (a.len() as f32).sqrt();
-        // let scale_sqr = a.len() as f32;
-
-        let fft_fwd = self.fft_planner.plan_fft_forward(window_size);
-        let fft_inv = self.fft_planner.plan_fft_inverse(window_size);
-
-        let mut cx_a = a
-            .into_iter()
-            .map(Complex32::from)
-            .collect::<Vec<Complex32>>();
-        let mut cx_b = b
-            .into_iter()
-            .map(Complex32::from)
-            .collect::<Vec<Complex32>>();
-
-        fft_fwd.process(&mut cx_a);
-        fft_fwd.process(&mut cx_b);
-
-        let mut cx_out_ab = Self::p(window_size, scale, &cx_a, &cx_b, k, aux_spectral_spread, iter_count);
-        let mut cx_out_ba = Self::p(window_size, scale, &cx_a, &cx_b, 1.0 - k, aux_spectral_spread, iter_count);
-
-        fft_inv.process(&mut cx_out_ab);
-        fft_inv.process(&mut cx_out_ba);
-
-        let mut out_ab = vec![0.0; window_size];
-        let mut out_ba = vec![0.0; window_size];
-
-        for i in 0..window_size {
-            out_ab[i] = cx_out_ab[i].re / scale;
-            out_ba[i] = cx_out_ba[i].re / scale;
-        }
-        (out_ab, out_ba)
+    pub fn hop_length(&self) -> usize {
+        self.hop_length
     }
 
-    
-    pub fn morph(&mut self, a: &[f32], b: &[f32], k: f32, aux_spectral_spread: f32, iter_count: i32) -> Vec<f32> {
-        assert_eq!(a.len(), b.len());
-        let window_size = a.len();
-        let scale = (a.len() as f32).sqrt();
-        // let scale_sqr = a.len() as f32;
+    fn put_inputs(&mut self, a: &[f32], b: &[f32]) {
+        debug_assert_eq!(a.len(), self.hop_length);
+        debug_assert_eq!(b.len(), self.hop_length);
 
-        let fft_fwd = self.fft_planner.plan_fft_forward(window_size);
-        let fft_inv = self.fft_planner.plan_fft_inverse(window_size);
-
-        let mut cx_a = a
-            .into_iter()
-            .map(Complex32::from)
-            .collect::<Vec<Complex32>>();
-        let mut cx_b = b
-            .into_iter()
-            .map(Complex32::from)
-            .collect::<Vec<Complex32>>();
-
-        fft_fwd.process(&mut cx_a);
-        fft_fwd.process(&mut cx_b);
-
-        let mut cx_out = Self::p(window_size, scale, &cx_a, &cx_b, k, aux_spectral_spread, iter_count);
-
-        fft_inv.process(&mut cx_out);
-
-        let mut out = vec![0.0; window_size];
-
-        for i in 0..window_size {
-            out[i] = cx_out[i].re / scale;
+        self.input_buf_a.push_clone_from_slice(a);
+        self.input_buf_b.push_clone_from_slice(b);
+    }
+    fn take_outputs(&mut self) -> Vec<f32> {
+        const MIN_WINDOW_FACTOR_SUM: f32 = 0.5;
+        let mut out = vec![0.0; self.hop_length];
+        let (lower, upper) = self.output_buf.slice_raw_mut(0, self.hop_length as isize);
+        for (i, (wave, window_factor_sum)) in lower.iter_mut().chain(upper.iter_mut()).enumerate() {
+            out[i] = *wave / window_factor_sum.max(MIN_WINDOW_FACTOR_SUM);
+            // reset for next time.
+            *wave = 0.0;
+            *window_factor_sum = 0.0;
         }
+        self.output_buf.shift(self.hop_length as isize);
         out
     }
-}
 
-#[cfg(test)]
-mod test {
-    use rustfft::{num_complex::Complex32, FftPlanner};
+    fn take_windowed_input(
+        window_func: &Vec<f32>,
+        input_buf: &RingBuffer<f32>,
+        windowed_inputs: &mut [Complex32],
+    ) {
+        let window_size = window_func.len();
+        debug_assert_eq!(input_buf.len(), window_size);
+        debug_assert_eq!(windowed_inputs.len(), window_size);
 
-    #[test]
-    fn a() {
-        const L: usize = 5;
-        let mut p = FftPlanner::<f32>::new();
-        let fwd = p.plan_fft_forward(L);
-        let inv = p.plan_fft_inverse(L);
+        let (lower, upper) = input_buf.slice_raw(0, window_size as isize);
 
-        let mut k = vec![
-            Complex32::from(0.0),
-            Complex32::from(1.0),
-            Complex32::from(2.0),
-            Complex32::from(3.0),
-            Complex32::from(4.0),
-        ];
-        let mut sc = vec![
-            Complex32::from(0.0),
-            Complex32::from(1.0),
-            Complex32::from(0.0),
-            Complex32::from(3.0),
-            Complex32::from(0.0),
-        ];
-        let z = k.as_mut_slice();
-        let zs = sc.as_mut_slice();
-        l(z);
-
-        fwd.process(z);
-        fwd.process(zs);
-        let lr = (L as f32).sqrt();
-
-        for i in 0..L {
-            zs[i] /= lr;
-            z[i] /= lr;
-            z[i] *= zs[i];
+        for (i, value) in lower.iter().chain(upper.iter()).enumerate() {
+            windowed_inputs[i] = (window_func[i] * value).into();
         }
-
-        l(z);
-
-        inv.process(z);
-
-        for i in 0..L {
-            z[i] /= lr;
-        }
-
-        l(z);
     }
-    fn l(z: &[Complex32]) {
-        println!(":::::::: L={}", z.len());
-        for v in z {
-            println!("{}", v);
+
+    /// Morph one `hop_length` of samples.
+    pub fn morph(
+        &mut self,
+        a: &[f32],
+        b: &[f32],
+        k: f32,
+        _aux_spectral_spread: f32,
+        _iter_count: i32,
+    ) -> Vec<f32> {
+        self.put_inputs(a, b);
+
+        // <load> input
+        // input *= window_fn
+        Self::take_windowed_input(
+            &self.window_func,
+            &mut self.input_buf_a,
+            &mut self.proc_buf.0,
+        );
+        Self::take_windowed_input(
+            &self.window_func,
+            &mut self.input_buf_b,
+            &mut self.proc_buf.1,
+        );
+
+        // (mag, phase) = fft(input)   [unnormalized]
+        self.fft_fwd.process(&mut self.proc_buf.0);
+        self.fft_fwd.process(&mut self.proc_buf.1);
+
+        // # morphing interpolation
+        for i in 0..self.window_size {
+            // const BIN_MAGNITUDE_FADE_COEFFICIENTS: (f32, f32) = (0.0, 0.6);
+
+            // (mag, phase)
+            let phase = (self.proc_buf.0[i].arg(), self.proc_buf.1[i].arg());
+            let mag = (self.proc_buf.0[i].abs(), self.proc_buf.1[i].abs());
+
+            // phase_delta = phase - phase_prev
+            let phase_delta = (
+                phase.0 - self.phase_prev[i].0,
+                phase.1 - self.phase_prev[i].1,
+            );
+            // self.mag_faded[i] = BIN_MAGNITUDE_FADE_COEFFICIENTS.lerp(mag, self.mag_faded[i]);
+
+            // phase_accum += lerp<k>(phase_delta[..])
+            self.phase_accum[i] += k.lerp(phase_delta.0, phase_delta.1);
+
+            // if (mag/mag_prev > 10) phase_accum = phase
+            if mag.0 / self.mag_prev[i].0 * (1.0 - k) > 10.0 {
+                self.phase_accum[i] = phase.0
+            }
+            if mag.1 / self.mag_prev[i].1 * (k) > 10.0 {
+                self.phase_accum[i] = phase.1
+            }
+
+            // ...prev = ...current
+            self.phase_prev[i] = phase;
+            self.mag_prev[i] = mag;
+
+            // reconstructed = complex(r= mag_fade, theta= phase_accum)
+            self.proc_buf.0[i] = Complex32::from_polar(
+                // k.lerp(self.mag_faded[i].0, self.mag_faded[i].1), !!!!!!!!!!!!!!!!!!!!!!!
+                mag.0.powf((1.0-k).sqrt()) * mag.1.powf(k.sqrt()),
+                self.phase_accum[i],
+            );
         }
+
+        // output_windowed = real(ifft(reconstructed)) * window_fn / window_size
+        // window_factor_sum += window_fn^2
+        self.fft_inv.process(&mut self.proc_buf.0);
+        for i in 0..self.window_size {
+            let (wave, window_factor_sum) = &mut self.output_buf[i as isize];
+            *wave += self.proc_buf.0[i].re * self.window_func[i] / self.window_size as f32;
+            *window_factor_sum += self.window_func[i] * self.window_func[i];
+        }
+
+        self.take_outputs()
     }
 }
