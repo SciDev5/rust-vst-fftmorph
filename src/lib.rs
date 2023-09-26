@@ -28,9 +28,9 @@ impl Default for MorphPlugin {
 #[derive(Params)]
 struct MorphParams {
     #[id = "morph"]
-    pub morph_k: FloatParam,
+    pub k_morph: FloatParam,
     #[id = "fade"]
-    pub fade_k: FloatParam,
+    pub k_fade: FloatParam,
     #[id = "z"]
     pub z: FloatParam,
     #[id = "iter_count"]
@@ -43,7 +43,7 @@ struct MorphParams {
 impl Default for MorphParams {
     fn default() -> Self {
         Self {
-            morph_k: FloatParam::new(
+            k_morph: FloatParam::new(
                 "Morph",
                 0.0,
                 FloatRange::Linear {
@@ -53,7 +53,7 @@ impl Default for MorphParams {
             )
             .with_smoother(SmoothingStyle::Linear(3.0))
             .with_step_size(0.01),
-            fade_k: FloatParam::new(
+            k_fade: FloatParam::new(
                 "X-Fade",
                 0.0,
                 FloatRange::Linear {
@@ -154,8 +154,8 @@ impl Plugin for MorphPlugin {
         let mut fade_k = vec![0.0; block_len];
         let mut aux_spectral_spread = vec![0.0; block_len];
         let mut iter_count = vec![0; block_len];
-        self.params.morph_k.smoothed.next_block(&mut morph_k[..], block_len);
-        self.params.fade_k.smoothed.next_block(&mut fade_k[..], block_len);
+        self.params.k_morph.smoothed.next_block(&mut morph_k[..], block_len);
+        self.params.k_fade.smoothed.next_block(&mut fade_k[..], block_len);
         self.params.z.smoothed.next_block(&mut aux_spectral_spread[..], block_len);
         self.params.iter_count.smoothed.next_block(&mut iter_count[..], block_len);
 
@@ -164,7 +164,7 @@ impl Plugin for MorphPlugin {
                 samples_main[channel_id],
                 samples_aux[channel_id],
                 &morph_k,
-                // &fade_k,
+                &fade_k,
                 aux_spectral_spread[0],
                 iter_count[0],
             );

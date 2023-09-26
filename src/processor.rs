@@ -14,12 +14,13 @@ impl Processor {
         &mut self,
         ch0: &mut [f32],
         ch1: &[f32],
-        morph_k: &[f32],
+        k_morph: &[f32],
+        k_fade: &[f32],
         aux_spectral_spread: f32,
         iter_count: i32,
     ) {
         debug_assert_eq!(ch0.len(), ch1.len());
-        debug_assert_eq!(ch0.len(), morph_k.len());
+        debug_assert_eq!(ch0.len(), k_morph.len());
         let hop_length = self.morpher.hop_length();
         let n_chunks = ch0.len() / hop_length;
         let overflow = ch0.len() % hop_length;
@@ -30,7 +31,8 @@ impl Processor {
             let out = self.morpher.morph(
                 &ch0[range.clone()],
                 &ch1[range.clone()],
-                morph_k[n * hop_length],
+                k_morph[n * hop_length],
+                k_fade[n * hop_length],
                 aux_spectral_spread,
                 iter_count,
             );

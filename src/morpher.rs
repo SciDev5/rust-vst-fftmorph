@@ -19,7 +19,7 @@ pub struct Morpher {
     output_buf: RingBuffer<(f32, f32)>,
 
     proc_buf: (Vec<Complex32>, Vec<Complex32>),
-    phase_accum: Vec<f32>,
+    phase_accum: Vec<(f32, f32)>,
     phase_prev: Vec<(f32, f32)>,
     // mag_faded: Vec<(f32, f32)>,
     mag_prev: Vec<(f32, f32)>,
@@ -61,7 +61,7 @@ impl Morpher {
                 vec![Complex32::default(); window_size],
             ),
 
-            phase_accum: vec![0.0; window_size],
+            phase_accum: vec![(0.0, 0.0); window_size],
             phase_prev: vec![(0.0, 0.0); window_size],
             // mag_faded: vec![(0.0, 0.0); window_size],
             mag_prev: vec![(0.0, 0.0); window_size],
@@ -114,7 +114,8 @@ impl Morpher {
         &mut self,
         a: &[f32],
         b: &[f32],
-        k: f32,
+        k_morph: f32,
+        k_fade: f32,
         _aux_spectral_spread: f32,
         _iter_count: i32,
     ) -> Vec<f32> {
@@ -153,14 +154,23 @@ impl Morpher {
             // self.mag_faded[i] = BIN_MAGNITUDE_FADE_COEFFICIENTS.lerp(mag, self.mag_faded[i]);
 
             // phase_accum += lerp<k>(phase_delta[..])
-            self.phase_accum[i] += k.lerp(phase_delta.0, phase_delta.1);
+            self.phase_accum[i].0 += k_morph.lerp(phase_delta.0, phase_delta.1); // A -> B
+            self.phase_accum[i].1 += k_morph.lerp(phase_delta.1, phase_delta.0); // B -> A
 
             // if (mag/mag_prev > 10) phase_accum = phase
-            if mag.0 / self.mag_prev[i].0 * (1.0 - k) > 10.0 {
-                self.phase_accum[i] = phase.0
+            //// for A -> B morph
+            if mag.0 / self.mag_prev[i].0 * (1.0 - k_morph) > 10.0 {
+                self.phase_accum[i].0 = phase.0
             }
-            if mag.1 / self.mag_prev[i].1 * (k) > 10.0 {
-                self.phase_accum[i] = phase.1
+            if mag.1 / self.mag_prev[i].1 * (k_morph) > 10.0 {
+                self.phase_accum[i].0 = phase.1
+            }
+            //// for B -> A morph
+            if mag.1 / self.mag_prev[i].1 * (1.0 - k_morph) > 10.0 {
+                self.phase_accum[i].1 = phase.1
+            }
+            if mag.0 / self.mag_prev[i].0 * (k_morph) > 10.0 {
+                self.phase_accum[i].1 = phase.0
             }
 
             // ...prev = ...current
@@ -168,19 +178,29 @@ impl Morpher {
             self.mag_prev[i] = mag;
 
             // reconstructed = complex(r= mag_fade, theta= phase_accum)
+            //// for A -> B morph
             self.proc_buf.0[i] = Complex32::from_polar(
                 // k.lerp(self.mag_faded[i].0, self.mag_faded[i].1), !!!!!!!!!!!!!!!!!!!!!!!
-                mag.0.powf((1.0-k).sqrt()) * mag.1.powf(k.sqrt()),
-                self.phase_accum[i],
+                mag.0.powf((1.0 - k_morph).sqrt()) * mag.1.powf(k_morph.sqrt()),
+                self.phase_accum[i].0,
+            );
+            //// for B -> A morph
+            self.proc_buf.1[i] = Complex32::from_polar(
+                // k.lerp(self.mag_faded[i].1, self.mag_faded[i].0), !!!!!!!!!!!!!!!!!!!!!!!
+                mag.1.powf((1.0 - k_morph).sqrt()) * mag.0.powf(k_morph.sqrt()),
+                self.phase_accum[i].1,
             );
         }
 
         // output_windowed = real(ifft(reconstructed)) * window_fn / window_size
         // window_factor_sum += window_fn^2
         self.fft_inv.process(&mut self.proc_buf.0);
+        self.fft_inv.process(&mut self.proc_buf.1);
         for i in 0..self.window_size {
             let (wave, window_factor_sum) = &mut self.output_buf[i as isize];
-            *wave += self.proc_buf.0[i].re * self.window_func[i] / self.window_size as f32;
+            *wave += k_fade.lerp(self.proc_buf.0[i].re, self.proc_buf.1[i].re)
+                * self.window_func[i]
+                / self.window_size as f32;
             *window_factor_sum += self.window_func[i] * self.window_func[i];
         }
 
